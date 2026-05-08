@@ -1,13 +1,29 @@
 import { HfInference } from "@huggingface/inference";
 
+export const fallbackISS = {
+  latitude: 28.6139,
+  longitude: 77.2090,
+  velocity: 27600
+};
+
+export const fallbackPeople = [
+  { name: "Oleg Kononenko", craft: "ISS" },
+  { name: "Nikolai Chub", craft: "ISS" },
+  { name: "Tracy Caldwell Dyson", craft: "ISS" },
+  { name: "Matthew Dominick", craft: "ISS" },
+  { name: "Michael Barratt", craft: "ISS" },
+  { name: "Jeanette Epps", craft: "ISS" },
+  { name: "Alexander Grebenkin", craft: "ISS" }
+];
+
 export const fetchISSLocation = async () => {
-  const response = await fetch('/api/iss/iss-now.json');
+  const response = await fetch('https://api.wheretheiss.at/v1/satellites/25544');
   if (!response.ok) throw new Error('Failed to fetch ISS location');
   return response.json();
 };
 
 export const fetchPeopleInSpace = async () => {
-  const response = await fetch('/api/iss/astros.json');
+  const response = await fetch('https://api.wheretheiss.at/v1/astronauts');
   if (!response.ok) throw new Error('Failed to fetch people in space');
   return response.json();
 };
@@ -23,7 +39,7 @@ export const reverseGeocode = async (lat, lon) => {
   }
 };
 
-const fallbackNews = [
+export const fallbackNews = [
   {
     title: "SpaceX launches new satellite into orbit",
     source: { name: "Space News" },
@@ -56,19 +72,13 @@ const fallbackNews = [
 export const fetchNews = async () => {
   const apiKey = import.meta.env.VITE_NEWS_API_KEY;
   if (!apiKey) {
-    console.warn("No VITE_NEWS_API_KEY found, using fallback data.");
-    return fallbackNews;
+    throw new Error("No VITE_NEWS_API_KEY found");
   }
-  try {
-    const response = await fetch(`https://newsapi.org/v2/top-headlines?category=science&pageSize=10&apiKey=${apiKey}`);
-    if (!response.ok) throw new Error('NewsAPI failed');
-    const data = await response.json();
-    if (!data.articles || data.articles.length === 0) return fallbackNews;
-    return data.articles;
-  } catch (error) {
-    console.error("News fetch error", error);
-    return fallbackNews;
-  }
+  const response = await fetch(`https://newsapi.org/v2/top-headlines?category=science&pageSize=10&apiKey=${apiKey}`);
+  if (!response.ok) throw new Error('NewsAPI failed');
+  const data = await response.json();
+  if (!data.articles || data.articles.length === 0) throw new Error('No articles found');
+  return data.articles;
 };
 
 export const chatWithHF = async (messages, contextStr) => {
@@ -90,20 +100,27 @@ export const chatWithHF = async (messages, contextStr) => {
     }))
   ];
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
   try {
     const response = await hf.chatCompletion({
       model: "meta-llama/Meta-Llama-3-8B-Instruct",
       messages: hfMessages,
       max_tokens: 150,
-    });
+    }, { signal: controller.signal });
 
+    clearTimeout(timeoutId);
     return response.choices[0]?.message?.content?.trim() || "I'm sorry, I couldn't generate a response.";
   } catch (error) {
+    clearTimeout(timeoutId);
     console.error("Chat Error:", error);
-    // If error is an object, try to extract message
+    if (error.name === 'AbortError') {
+      return "AI service temporarily unavailable.";
+    }
     if (error.message) {
       return `API Error: ${error.message}`;
     }
-    return "Sorry, I am currently unable to process your request. Please try again later.";
+    return "AI service temporarily unavailable.";
   }
 };

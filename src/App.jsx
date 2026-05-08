@@ -9,8 +9,7 @@ import NewsDashboard from './components/NewsDashboard';
 import NewsChart from './components/NewsChart';
 import Chatbot from './components/Chatbot';
 
-import { fetchISSLocation, fetchPeopleInSpace, reverseGeocode, fetchNews } from './utils/api';
-import { calculateSpeed } from './utils/haversine';
+import { fetchISSLocation, fetchPeopleInSpace, reverseGeocode, fetchNews, fallbackISS, fallbackPeople, fallbackNews } from './utils/api';
 import { getCache, setCache } from './utils/localStorage';
 import toast from 'react-hot-toast';
 
@@ -21,6 +20,8 @@ function App() {
   // Data States
   const [issHistory, setIssHistory] = useState([]); // Array of { position, timestamp, speed, locationName }
   const [peopleInSpace, setPeopleInSpace] = useState(null);
+  const [issLoading, setIssLoading] = useState(true);
+  const [issError, setIssError] = useState(false);
   const [news, setNews] = useState([]);
   const [newsLoading, setNewsLoading] = useState(true);
   const [selectedNewsSource, setSelectedNewsSource] = useState(null);
@@ -37,46 +38,50 @@ function App() {
 
   const toggleTheme = () => setTheme(theme === 'dark' ? 'light' : 'dark');
 
-  // Fetch ISS Data
   const updateISSData = useCallback(async (isManualRefresh = false) => {
     try {
-      const [posData, peopleData] = await Promise.all([
-        fetchISSLocation(),
-        !peopleInSpace ? fetchPeopleInSpace() : Promise.resolve(null)
-      ]);
+      if (isManualRefresh) setIssLoading(true);
+
+      let posData, peopleData;
+      let isFallback = false;
+
+      try {
+        [posData, peopleData] = await Promise.all([
+          fetchISSLocation(),
+          !peopleInSpace ? fetchPeopleInSpace() : Promise.resolve(null)
+        ]);
+        setIssError(false);
+      } catch (err) {
+        console.error("ISS API Failed, using fallback:", err);
+        setIssError(true);
+        isFallback = true;
+        posData = fallbackISS;
+        peopleData = { people: fallbackPeople };
+        if (isManualRefresh) toast.error('Using simulated ISS data');
+      }
 
       if (peopleData) setPeopleInSpace(peopleData);
 
-      const lat = parseFloat(posData.iss_position.latitude);
-      const lon = parseFloat(posData.iss_position.longitude);
-      const timestamp = posData.timestamp * 1000;
+      const lat = parseFloat(posData.latitude);
+      const lon = parseFloat(posData.longitude);
+      const timestamp = posData.timestamp ? posData.timestamp * 1000 : new Date().getTime();
+      const velocity = parseFloat(posData.velocity);
 
       // Reverse geocode
-      const locationName = await reverseGeocode(lat, lon);
+      const locationName = isFallback ? 'Simulated Location' : await reverseGeocode(lat, lon).catch(() => 'Ocean / Unknown area');
 
       setIssHistory((prev) => {
-        let speed = 0;
-        if (prev.length > 0) {
-          const last = prev[prev.length - 1];
-          speed = calculateSpeed(
-            last.position.lat, last.position.lon, last.timestamp,
-            lat, lon, timestamp
-          );
-        }
-
+        const speed = velocity;
         const newPoint = { position: { lat, lon }, timestamp, speed, locationName };
-        const newHistory = [...prev, newPoint].slice(-15); // Keep last 15
-        
-        // Also save to a separate history for chart if needed, but requirements say last 30 for chart.
-        // We'll just keep 30 in history to satisfy both (map can just use all or we can slice it there)
-        const extendedHistory = [...prev, newPoint].slice(-30);
-        return extendedHistory;
+        return [...prev, newPoint].slice(-30);
       });
 
-      if (isManualRefresh) toast.success('ISS position updated');
+      if (isManualRefresh && !isFallback) toast.success('ISS position updated');
     } catch (error) {
-      console.error('Error updating ISS data', error);
-      if (isManualRefresh) toast.error('Failed to update ISS position');
+      console.error('Critical Error updating ISS data', error);
+      setIssError(true);
+    } finally {
+      setIssLoading(false);
     }
   }, [peopleInSpace]);
 
@@ -87,10 +92,9 @@ function App() {
     return () => clearInterval(interval);
   }, [updateISSData]);
 
-  // Fetch News Data
   const loadNews = useCallback(async (forceRefresh = false) => {
-    setNewsLoading(true);
     try {
+      setNewsLoading(true);
       let data = forceRefresh ? null : getCache('news_cache');
       
       if (!data) {
@@ -103,7 +107,9 @@ function App() {
       
       setNews(data);
     } catch (error) {
-      toast.error('Failed to load news');
+      console.error('News Error', error);
+      toast.error('Failed to load news, using fallback');
+      setNews(fallbackNews);
     } finally {
       setNewsLoading(false);
     }
@@ -156,12 +162,26 @@ function App() {
         
         {/* Top Row: Map & Core Stats */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2">
-            <ISSMap history={issHistory.slice(-15)} />
+          <div className="lg:col-span-2 relative min-h-[400px]">
+            {issLoading && issHistory.length === 0 ? (
+              <div className="absolute inset-0 bg-slate-100 dark:bg-slate-800 animate-pulse rounded-xl flex items-center justify-center">
+                <p className="text-slate-500">Loading Map...</p>
+              </div>
+            ) : (
+              <ISSMap history={issHistory.slice(-15)} />
+            )}
           </div>
           <div className="flex flex-col gap-6">
-            <ISSStats data={currentISS} onRefresh={() => updateISSData(true)} />
-            <PeopleInSpace data={peopleInSpace} />
+            {issLoading && issHistory.length === 0 ? (
+              <div className="h-40 bg-slate-100 dark:bg-slate-800 animate-pulse rounded-xl"></div>
+            ) : (
+              <ISSStats data={currentISS} onRefresh={() => updateISSData(true)} />
+            )}
+            {issLoading && !peopleInSpace ? (
+              <div className="h-40 bg-slate-100 dark:bg-slate-800 animate-pulse rounded-xl"></div>
+            ) : (
+              <PeopleInSpace data={peopleInSpace} />
+            )}
           </div>
         </div>
 
